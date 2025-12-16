@@ -13,11 +13,43 @@ int main() {
   std::cout << "Layout: " << layout << std::endl;
   std::cout << "Right inverse: " << right_inverse(layout) << std::endl;
   std::cout << "Left inverse: " << left_inverse(layout) << std::endl;
+  std::cout << std::endl;
 
-  Layout<Shape<_256, _128>, Stride<_1024, _1>> partial {};
-  std::cout << "Partial: " << partial << std::endl;
-  auto p_inv = right_inverse(partial);
-  std::cout << "Rignt inverse of Partial: " << p_inv << std::endl;
+  {
+    Layout<Shape<_256, _128>, Stride<_1024, _1>> partial {};
+    std::cout << "Partial: " << partial << std::endl;
+    auto p_inv = right_inverse(partial);
+    std::cout << "Rignt inverse of Partial: " << p_inv << std::endl;
+  }
+
+  std::cout << "-----------------------------------------------" << std::endl;
+
+  {
+    Layout<Shape<_256, _128>, Stride<_128, _1>> full {};
+    std::cout << "Full: " << full << std::endl;
+    auto p_inv = right_inverse(full);
+    std::cout << "Rignt inverse of Full: " << p_inv << std::endl;
+  }
+
+  std::cout << std::endl;
+
+  {
+    Layout<Shape<_256, _128>, Stride<_256, _2>> full {};
+    std::cout << "Not working layout: " << full << std::endl;
+    auto p_inv = right_inverse(full);
+    std::cout << "Rignt inverse of NotWork: " << p_inv << std::endl;
+  }
+
+  std::cout << std::endl;
+
+  {
+    Layout<Shape<_256, _128>, Stride<_1, _256>> full {};
+    std::cout << "Col: " << full << std::endl;
+    auto p_inv = right_inverse(full);
+    std::cout << "Rignt inverse of Col: " << p_inv << std::endl;
+  }
+
+  std::cout << std::endl;
 
   Layout<
     Shape< Shape<_256, _128>, _1, _2 >,

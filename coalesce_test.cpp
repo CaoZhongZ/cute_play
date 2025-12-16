@@ -21,5 +21,13 @@ int main() {
   auto another = coalesce(a, Step<_1, _1, _1>{});
   std::cout << "Result layout: " << another <<std::endl;
 
+  {
+    auto layout1 = Layout <Shape <_4, _32>, Stride <_1, _4>> {};
+    auto layout2 = Layout <Shape <_32, _4>, Stride <_4, _1>> {};
+
+    std::cout << "Coleasce "<<layout1<< " is "<<coalesce(layout1)<<std::endl;
+    std::cout << "Coleasce "<<layout2<< " is "<<coalesce(layout2)<<std::endl;
+  }
+
   return 0;
 }
