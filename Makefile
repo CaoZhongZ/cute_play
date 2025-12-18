@@ -4,4 +4,4 @@ CXXFLAGS=-g3 -O0 -ggdb3 -fno-inline -fno-omit-frame-pointer --std=c++17 -Icutlas
 all : coalesce_test composition_test complement_test tiling_test product_test
 
 clean:
-	rm -rf coalesce_test composition_test complement_test tiling_test *.dSYM product_test
+	rm -rf coalesce_test composition_test complement_test tiling_test *.dSYM product_test identity_test layout_algtest divide_test inverse_test
