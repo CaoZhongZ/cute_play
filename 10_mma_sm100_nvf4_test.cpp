@@ -3,6 +3,8 @@
 #include <cute/atom/mma_atom.hpp>
 #include <iostream>
 
+#include <cutlass/detail/layout.hpp>
+
 using namespace cute;
 
 // The shared memory buffers for A and B matrices.
@@ -23,24 +25,100 @@ struct SharedStorage
   CUTE_DEVICE constexpr auto tensor_sB() { return make_tensor(make_smem_ptr(B.begin()), BSmemLayout{}); }
 };
 
+namespace cutlass::gemm::collective {
+  struct KernelScheduleAuto {};
+}
+
+namespace cute::detail {
+namespace blockscaled {
+
+enum class BlockScaledInstr {
+  MXF4_NVF4,
+  MXF4F6F8
+};
+
+}}
+
+template <class BuilderScheduleTag, class T>
+struct blockscaled_type {};
+
+template <class BuilderScheduleTag, class T>
+struct blockscaled_type<BuilderScheduleTag, cutlass::nv_float4_t<T>> {
+  using sf_type = cutlass::float_ue4m3_t;
+  using data_type = T;
+  static constexpr uint32_t SfVectorSize = 16;
+};
+
+template <class Element, bool IsF8F6F4 = true>
+constexpr auto
+sm1xx_kernel_input_element_to_mma_input_element() {
+  if constexpr (cute::is_same_v<Element, float>) {
+    return cutlass::tfloat32_t{};
+  }
+  else if constexpr (cute::is_same_v<Element, cutlass::float_e2m1_t> && IsF8F6F4) {
+    return cutlass::detail::float_e2m1_unpacksmem_t{};
+  }
+  else if constexpr (cute::is_same_v<Element, cutlass::float_e3m2_t> && IsF8F6F4) {
+    return cutlass::detail::float_e3m2_unpacksmem_t{};
+  }
+  else if constexpr (cute::is_same_v<Element, cutlass::float_e2m3_t> && IsF8F6F4) {
+    return cutlass::detail::float_e2m3_unpacksmem_t{};
+  }
+  else if constexpr (cute::is_same_v<Element, cutlass::type_erased_dynamic_float4_t> && IsF8F6F4) {
+    return cutlass::detail::type_erased_dynamic_float4_unpacksmem_t{};
+  }
+  else if constexpr (cute::is_same_v<Element, cutlass::type_erased_dynamic_float6_t> && IsF8F6F4) {
+    return cutlass::detail::type_erased_dynamic_float6_unpacksmem_t{};
+  }
+  else {
+    return Element{};
+  }
+}
 
 int main() {
-  using TypeA = cutlass::half_t; // MMA A Data Type
-  using TypeB = cutlass::half_t; // MMA B Data Type
-  using TypeC = float;           // MMA C Data Type
-  using TypeD = float;           // MMA D Data Type
-  using TypeAccumulator = float; // Both TypeC and TypeD are float, use float accumulator type.
+  using TypeA = cutlass::nv_float4_t<cutlass::float_e2m1_t>; // MMA A Data Type
+  using TypeB = cutlass::nv_float4_t<cutlass::float_e2m1_t>; // MMA B Data Type
+  using TypeC = cutlass::bfloat16_t;   // MMA C Data Type
+  using TypeD = cutlass::bfloat16_t;   // MMA D Data Type
+  using TypeAccumulator = float;
+
+  using LayoutATag  = cutlass::layout::RowMajor;
+  using LayoutBTag  = cutlass::layout::RowMajor;
+  using LayoutCTag  = cutlass::layout::RowMajor;  // Layout type for C matrix operand
+  using LayoutDTag  = cutlass::layout::RowMajor;  // Layout type for D matrix operand
+
+  using ScheduleTag = cutlass::gemm::collective::KernelScheduleAuto;
+
+  using MmaTileShape = Shape<_256,_256,_256>;   // MMA's tile size
+  using ClusterShape = Shape<_1,_4,_1>;    // Shape of the threadblocks in a cluster
+                                           // (_2, _4, _1) is for 2SM variant
+
+  using ElementA = blockscaled_type<ScheduleTag, TypeA>::data_type;
+  using ElementSFA = blockscaled_type<ScheduleTag, TypeA>::sf_type;
+  using ElementB = blockscaled_type<ScheduleTag, TypeB>::data_type;
+  using ElementSFB = blockscaled_type<ScheduleTag, TypeB>::sf_type;
+  using ElementSF = ElementSFA;
+
+  using ElementAMma = decltype(
+      sm1xx_kernel_input_element_to_mma_input_element<ElementA, false>());
+  using ElementBMma = decltype(
+      sm1xx_kernel_input_element_to_mma_input_element<ElementB, false>());
+
   // Create TiledMma. make_tiled_mma takes the target instructions and an (optional) instruction layout as parameters to create a
   // larger TiledMma from the given mma instruction.
   // See cute/arch/mma_sm100_umma.hpp for all tcgen05.mma instructions
-  TiledMMA tiled_mma = make_tiled_mma(SM100_MMA_F16BF16_SS<TypeA, TypeB, TypeC,                 // Mma's A, B, and Accumulator types
-                                                           128, 256,                            // Mma M and N dimensions
-                                                           UMMA::Major::K, UMMA::Major::K>{});  // A and B layouts
+  TiledMMA tiled_mma = make_tiled_mma(
+      SM100_MMA_MXF4_SS<ElementAMma, ElementBMma, TypeAccumulator,
+      ElementSF,                        // Mma's A, B, and Accumulator types
+      128, 256, 16,                     // Mma M and N dimensions and vec size
+      UMMA::Major::K, UMMA::Major::K>{} // A and B layouts
+  );
+
   print(tiled_mma);
 
   // Define MMA tiler sizes (static)
-  auto bM = tile_size<0>(tiled_mma);             // MMA Tile M. We'll use 1 MMAs per MMA Tile M.
-  auto bN = tile_size<1>(tiled_mma);             // MMA Tile N. We'll use 1 MMAs per MMA Tile M.
+  auto bM = tile_size<0>(tiled_mma);    // MMA Tile M. We'll use 1 MMAs per MMA Tile M.
+  auto bN = tile_size<1>(tiled_mma);    // MMA Tile N. We'll use 1 MMAs per MMA Tile M.
   auto bK = tile_size<2>(tiled_mma) * Int<4>{};  // MMA Tile K. We'll use 4 MMAs per MMA Tile K. For 16b types, tcgen05.mma has K16.
   auto mma_tiler = make_shape(bM, bN, bK);       // (MMA_M, MMA_N, MMA_K)
   std::cout << "mma_tiler:\t" << mma_tiler << std::endl;
