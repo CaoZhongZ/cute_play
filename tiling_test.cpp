@@ -17,15 +17,16 @@ int main() {
     << "-->" << tensor_T << std::endl;
 
   // Thread arrangement
-  Layout thr_layout = make_layout(make_shape(Int<32>{}, Int<8>{}));  // (32,8) -> thr_idx
+  Layout thr_layout = make_layout(make_shape(Int<16>{}, Int<8>{}));  // (32,8) -> thr_idx
 
   // Value arrangement per thread
   Layout val_layout = make_layout(make_shape(Int<4>{}, Int<1>{}));   // (4,1) -> val_idx
 
   // Define `AccessType` which controls the size of the actual memory access instruction.
-  using CopyOp = UniversalCopy<uint_byte_t<sizeof(Element) * size(val_layout)>>;     // A very specific access width copy instruction
+  // using CopyOp = UniversalCopy<uint_byte_t<sizeof(Element) * size(val_layout)>>;     // A very specific access width copy instruction
   //using CopyOp = UniversalCopy<cutlass::AlignedArray<Element, size(val_layout)>>;  // A more generic type that supports many copy strategies
   //using CopyOp = AutoVectorizingCopy;                                              // An adaptable-width instruction that assumes maximal alignment of inputs
+  using CopyOp = SM75_U32x2_LDSM_N;
 
   using SrcLayout = Layout<Shape<_1,Int<sizeof_bits<uint_byte_t<sizeof(Element) * size(val_layout)>>::value>>>;
 

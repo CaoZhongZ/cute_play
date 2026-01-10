@@ -1,6 +1,7 @@
 
 #include <cute/layout.hpp>
 #include <cute/atom/mma_atom.hpp>
+#include <cutlass/detail/sm100_blockscaled_layout.hpp>
 #include <iostream>
 
 #include <cutlass/detail/layout.hpp>
@@ -75,7 +76,41 @@ sm1xx_kernel_input_element_to_mma_input_element() {
   }
 }
 
+template<int SFVecSize, UMMA::Major major = UMMA::Major::K>
+struct Sm1xxBlockScaledBasicChunk {
+
+  using Blk_MN    = _128;
+  using Blk_SF    =   _4; 
+
+  using SfKMajorAtom  = Layout< Shape< Shape<_32,_4>, Shape<Int<SFVecSize>, _4>>, 
+                               Stride<Stride<_16,_4>, Stride<           _0, _1>>>;
+  using SfMNMajorAtom = Layout< Shape< Shape<Int<SFVecSize>, _4>,  Shape<_32,_4>>, 
+                               Stride<Stride<            _0, _1>, Stride<_16,_4>>>;
+  using SfAtom    = cute::conditional_t<major == UMMA::Major::K, SfKMajorAtom, SfMNMajorAtom>;
+};
+
+//// Describe the Scalefactor Tensor without VectorSize
+struct Sm1xxBlockScaledTensorConfig {
+  // k-major order
+  // The blockscaled tensor does not need to know vectorsize
+  using Blk_M = _128;
+  using Blk_N =   _4; 
+  using SfAtom = Layout< Shape< Shape<_32,_4>,  Shape<_4>>, 
+                        Stride<Stride<_16,_4>, Stride<_1>>>;
+
+  template <class ProblemShape>
+  CUTE_HOST_DEVICE
+  static constexpr auto
+  tile_atom_to_shape(ProblemShape problem_shape) {
+    auto problem_shape_MNL = append<3>(problem_shape, 1);
+    auto [M, N, L] = problem_shape_MNL;
+    return tile_to_shape(SfAtom{}, make_shape(M,N,L), Step<_2,_1,_3>{});
+  }
+};
+
 int main() {
+  static constexpr int SFVecSize = 16;
+
   using TypeA = cutlass::nv_float4_t<cutlass::float_e2m1_t>; // MMA A Data Type
   using TypeB = cutlass::nv_float4_t<cutlass::float_e2m1_t>; // MMA B Data Type
   using TypeC = cutlass::bfloat16_t;   // MMA C Data Type
@@ -89,7 +124,7 @@ int main() {
 
   using ScheduleTag = cutlass::gemm::collective::KernelScheduleAuto;
 
-  using MmaTileShape = Shape<_256,_256,_256>;   // MMA's tile size
+  using MmaTileShape = Shape<_128,_256,_256>;   // MMA's tile size
   using ClusterShape = Shape<_1,_4,_1>;    // Shape of the threadblocks in a cluster
                                            // (_2, _4, _1) is for 2SM variant
 
@@ -122,6 +157,7 @@ int main() {
   auto bK = tile_size<2>(tiled_mma) * Int<4>{};  // MMA Tile K. We'll use 4 MMAs per MMA Tile K. For 16b types, tcgen05.mma has K16.
   auto mma_tiler = make_shape(bM, bN, bK);       // (MMA_M, MMA_N, MMA_K)
   std::cout << "mma_tiler:\t" << mma_tiler << std::endl;
+  auto sf_tiler = make_shape(bM, bN, bK/16);       // (MMA_M, MMA_N, MMA_K)
 
   if (not evenly_divides(shape(mma_tiler), tile_shape(tiled_mma))) {
     std::cerr << "The MMA Shape should evenly divide the MMA Tiler." << std::endl;
@@ -133,22 +169,36 @@ int main() {
     return -1;
   }*/
   // Pre-partitioned Tile Shape (MmaTile_M, MmaTile_K) to post-partitioned (MmaA, NumMma_M, NumMma_K)
-  auto mma_shape_A = partition_shape_A(tiled_mma, make_shape(size<0>(mma_tiler), size<2>(mma_tiler)));
+  auto mma_shape_A = partition_shape_A(tiled_mma, make_shape(size<0>(mma_tiler), size<2>(mma_tiler), Int<4>{}));
   // Pre-partitioned Tile Shape (MmaTile_N, MmaTile_K) to post-partitioned (MmaB, NumMma_N, NumMma_K)
-  auto mma_shape_B = partition_shape_B(tiled_mma, make_shape(size<1>(mma_tiler), size<2>(mma_tiler)));
+  auto mma_shape_B = partition_shape_B(tiled_mma, make_shape(size<1>(mma_tiler), size<2>(mma_tiler), Int<4>{}));
 
   // Print and inspect mma_shape_A, and mma_shape_B for this example.
   print("mma_shape_A:\t"); print(mma_shape_A); print("\n");  // mma_shape_A:  ((_128,_16),_1,_4)
   print("mma_shape_B:\t"); print(mma_shape_B); print("\n");  // mma_shape_B:  ((_256,_16),_1,_4)
 
-  auto sA_layout = UMMA::tile_to_mma_shape(UMMA::Layout_K_SW128_Atom<ElementA>{}, mma_shape_A);
-  auto sB_layout = UMMA::tile_to_mma_shape(UMMA::Layout_K_SW128_Atom<ElementB>{}, mma_shape_B);
+  auto sA_layout = UMMA::tile_to_mma_shape(UMMA::Layout_K_SW128_Atom<ElementA>{}, mma_shape_A, Step<_1,_2,_3>{});
+  auto sB_layout = UMMA::tile_to_mma_shape(UMMA::Layout_K_SW128_Atom<ElementB>{}, mma_shape_B, Step<_1,_2,_3>{});
 
   std::cout<<"UMMA::Layout_K_SW128_Atom:\t"<<UMMA::Layout_K_SW128_Atom<ElementA>{}<<std::endl;
 
   // Print and inspect sA_layout and sB_layout for this example.
-  print("sA_layout:\t"); print(sA_layout); print("\n");      // sA_layout:   Sw<3,4,3> o smem_ptr[16b](unset) o ((_128,_16),_1,_4):((_64,_1),_0,_16)
-  print("sB_layout:\t"); print(sB_layout); print("\n");      // sB_layout:   Sw<3,4,3> o smem_ptr[16b](unset) o ((_256,_16),_1,_4):((_64,_1),_0,_16)
+  print("sA_layout:\t"); print(sA_layout); print("\n");      // sA_layout:   Sw<3,4,3> o smem_ptr[16b](unset) o ((_128,_64),_1,_4):((_256,_1),_0,_64)
+  print("sB_layout:\t"); print(sB_layout); print("\n");      // sB_layout:   Sw<3,4,3> o smem_ptr[16b](unset) o ((_256,_64),_1,_4):((_256,_1),_0,_64)
+
+  using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVecSize>;
+
+  auto sfA_layout = Sm1xxBlkScaledConfig::deduce_smem_layoutSFA(tiled_mma, MmaTileShape{});
+  auto sfB_layout = Sm1xxBlkScaledConfig::deduce_smem_layoutSFB(tiled_mma, MmaTileShape{});
+
+  print("sfA_layout:\t"); print(sfA_layout); print("\n");
+
+  auto smem_sfA_layout = make_layout(
+    append(shape(sfA_layout), Int<4>{}),
+    append(stride(sfA_layout), size(filter_zeros(sfA_layout)))
+  );
+
+  print("smem_sfA_laylout:\t"); print(smem_sfA_layout); print("\n");
 
   // The cluster shape and layout
   auto cluster_shape = make_shape(Int<1>{}, Int<1>{}, Int<1>{});
@@ -162,11 +212,14 @@ int main() {
 
   int Gemm_M = 512;
   int Gemm_N = 1024;
-  int Gemm_K = 256;
+  int Gemm_K = 2048;
 
   // A tensor MxK K-major (Layout T = Row-Major)
   Layout layout_A = make_layout(make_shape (Gemm_M,   Gemm_K),
                                 make_stride(Gemm_K, Int<1>{}));   // (Gemm_M,Gemm_K):(Gemm_K,_1)
+  // A tensor MxK K-major (Layout T = MN-Major)
+  Layout layout_sfA = make_layout(make_shape (Gemm_M,   Gemm_K/16));
+
   // B tensor NxK K-major (Layout N = Column-Major)
   Layout layout_B = make_layout(make_shape (Gemm_N,   Gemm_K),
                                 make_stride(Gemm_K, Int<1>{}));   // (Gemm_N,Gemm_K):(Gemm_K,_1)
@@ -177,6 +230,8 @@ int main() {
   Layout layout_D = make_layout(make_shape (Gemm_M,   Gemm_N),
                                 make_stride(Gemm_N, Int<1>{}));   // (Gemm_M,Gemm_N):(Gemm_N,_1)
   Tensor mA = make_tensor(make_gmem_ptr(static_cast<ElementA *>(nullptr)), layout_A);      // (Gemm_M, Gemm_K)
+  Tensor msfA = make_tensor(make_gmem_ptr(static_cast<ElementSFA *>(nullptr)), layout_sfA);
+
   Tensor mB = make_tensor(make_gmem_ptr(static_cast<ElementB *>(nullptr)), layout_B);      // (Gemm_N, Gemm_K)
   Tensor mC = make_tensor(make_gmem_ptr(static_cast<TypeC *>(nullptr)), layout_C);      // (Gemm_M, Gemm_N)
   Tensor mD = make_tensor(make_gmem_ptr(static_cast<TypeC *>(nullptr)), layout_D);      // (Gemm_M, Gemm_N)
@@ -185,11 +240,14 @@ int main() {
   print("Index with:\t"); print(mma_coord); print("\n");
 
   Tensor gA = local_tile(mA, mma_tiler, mma_coord, Step<_1, X,_1>{});  // (MmaTile_M, MmaTile_K, Tiles_K)
+  Tensor gsfA = local_tile(msfA, sf_tiler, mma_coord, Step<_1, X,_1>{});
+
   Tensor gB = local_tile(mB, mma_tiler, mma_coord, Step< X,_1,_1>{});  // (MmaTile_N, MmaTile_K, Tiles_K)
   Tensor gC = local_tile(mC, mma_tiler, mma_coord, Step<_1,_1, X>{});  // (MmaTile_M, MmaTile_N)
   Tensor gD = local_tile(mD, mma_tiler, mma_coord, Step<_1,_1, X>{});  // (MmaTile_M, MmaTile_N)
 
   print("mA:\t"); print(mA); print("\n");   // mA:   gmem_ptr[16b](GMEM_ADDR_A) o (512,256):(256,_1)
+  print("msfA:\t"); print(msfA); print("\n");   // mA:   gmem_ptr[16b](GMEM_ADDR_A) o (512,256):(256,_1)
   print("mB:\t"); print(mB); print("\n");   // mB:   gmem_ptr[16b](GMEM_ADDR_B) o (1024,256):(256,_1)
   print("mC:\t"); print(mC); print("\n");   // mC:   gmem_ptr[32b](GMEM_ADDR_C) o (512,1024):(1024,_1)
   print("mD:\t"); print(mD); print("\n");   // mD:   gmem_ptr[32b](GMEM_ADDR_D) o (512,1024):(1024,_1)
@@ -200,6 +258,8 @@ int main() {
   print("mD tiled:\t"); print(zipped_divide(mD, dice(Step<_1, _1, X>{}, mma_tiler))); print("\n");
 
   print("gA:\t"); print(gA); print("\n");   // gA:   gmem_ptr[16b](GMEM_ADDR_A + offset_for_mma_tile) o (_128,_64,4):(256,_1,_64)
+  print("gsfA:\t"); print(gsfA); print("\n");
+
   print("gB:\t"); print(gB); print("\n");   // gB:   gmem_ptr[16b](GMEM_ADDR_B + offset_for_mma_tile) o (_256,_64,4):(_1,256,16384)
   print("gC:\t"); print(gC); print("\n");   // gC:   gmem_ptr[32b](GMEM_ADDR_C + offset_for_mma_tile) o (_128,_256):(256,_1)
   print("gD:\t"); print(gD); print("\n");   // gD:   gmem_ptr[32b](GMEM_ADDR_D + offset_for_mma_tile) o (_128,_256):(256,_1)
@@ -247,6 +307,29 @@ int main() {
   print("tCtAcc:\t"); print(tCtAcc); print("\n"); // tCtAcc: tmem_[32b](TMEM_ADDR) o ((_128,_256),_1,_1):((_65536,_1),_0,_0)
   int mma_barrier_phase_bit = 0;  // Each barrier has an associated phase_bit.
 
+  // TMA load
+  auto tma_a = SM90_TMA_LOAD {};
+  auto tma_sfa = SM90_TMA_LOAD {};
+  auto tma_b = SM90_TMA_LOAD {};
+  auto tma_sfb = SM90_TMA_LOAD {};
+
+  print("\ncluster_layout_vmnk"); print(cluster_layout_vmnk); print("\n");
+  auto tma_a_atom = make_tma_atom_A_sm100<ElementA>(
+      tma_a, gA, sA_layout(_,_,_,Int<0>{}),
+      MmaTileShape {}, tiled_mma, cluster_layout_vmnk);
+
+  auto tma_alter_atom = make_tma_atom_A_sm100<ElementA>(
+      tma_a, mA, sA_layout(_,_,_,Int<0>{}),
+      MmaTileShape {}, tiled_mma, cluster_layout_vmnk);
+
+  // smem_sfA_laylout:	((((_32,_4),_1),(_16,_4)),_1,(_1,_4),_4):((((_16,_4),_512),(_0,_1)),_0,(_4,_512),_2048)
+  // uint16_t <-- not fp8???
+  /*
+  auto tma_sfa_atom = make_tma_atom_A_sm100<uint16_t>(
+      tma_sfa, gsfA, smem_sfA_layout(_,_,_,Int<0>{}),
+      MmaTileShape {}, tiled_mma, cluster_layout_vmnk);
+      */
+
   print("\nStart mainloop: \n");
 
   for (int k_tile = 0; k_tile < size<3>(tCgA); ++k_tile)
@@ -275,11 +358,11 @@ int main() {
       // Execute a MmaTile_M x MmaTile_N x MmaTile_K GEMM
       for (int k_block = 0; k_block < size<2>(tCrA); ++k_block) {
         // gemm(tiled_mma, tCrA(_,_,k_block), tCrB(_,_,k_block), tCtAcc);
-        print("gemm(tiled_mma: ");
-        print(tCrA(_,_,k_block)); print(" * ");
-        print(tCrB(_,_,k_block)); print(" -> ");
-        print(tCtAcc);
-        print(")\n");
+        // print("gemm(tiled_mma: ");
+        // print(tCrA(_,_,k_block)); print(" * ");
+        // print(tCrB(_,_,k_block)); print(" -> ");
+        // print(tCtAcc);
+        // print(")\n");
 
         tiled_mma.accumulate_ = UMMA::ScaleOut::One;
       }

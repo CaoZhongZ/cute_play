@@ -53,7 +53,7 @@ int main() {
   print("LayoutSF:\t"); print(LayoutSF {}); print("\n");
 
   auto problem_shape_MNKL = make_shape(256, 512, 1024, 1);
-  using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<16>;
+  using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVecSize>;
   const auto layout_sfa_ref = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(problem_shape_MNKL);
   const auto layout_sfb_ref = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(problem_shape_MNKL);
 

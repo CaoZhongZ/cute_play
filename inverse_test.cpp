@@ -29,6 +29,8 @@ int main() {
     std::cout << "Full: " << full << std::endl;
     auto p_inv = right_inverse(full);
     std::cout << "Rignt inverse of Full: " << p_inv << std::endl;
+    auto p_inv1 = right_inverse(full).with_shape(full.shape());
+    std::cout << "Rignt inverse with_shape of Full: " << p_inv1 << std::endl;
   }
 
   std::cout << std::endl;
@@ -38,6 +40,8 @@ int main() {
     std::cout << "Not working layout: " << full << std::endl;
     auto p_inv = right_inverse(full);
     std::cout << "Rignt inverse of NotWork: " << p_inv << std::endl;
+    auto p_inv1 = right_inverse(full).with_shape(full.shape());
+    std::cout << "Rignt inverse of NotWork and with_shape: " << p_inv1 << std::endl;
   }
 
   std::cout << std::endl;
@@ -47,6 +51,8 @@ int main() {
     std::cout << "Col: " << full << std::endl;
     auto p_inv = right_inverse(full);
     std::cout << "Rignt inverse of Col: " << p_inv << std::endl;
+    auto p_inv1 = right_inverse(full).with_shape(full.shape());
+    std::cout << "Rignt inverse and with shape of Col: " << p_inv1 << std::endl;
   }
 
   std::cout << std::endl;
