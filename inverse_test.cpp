@@ -5,8 +5,8 @@ using namespace cute;
 
 int main() {
   Layout<
-    Shape< Shape<_256, _128>, _1, _2 >,
-    Stride< Stride<_128, _1>, _0, _32768> > layout {};
+    Shape< Shape<_16, _2>, _8>,
+    Stride< Stride<_8, _0>, _1> > layout {};
 
   auto r_inv = right_inverse(layout);
 
