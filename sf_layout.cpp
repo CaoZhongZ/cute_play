@@ -45,17 +45,17 @@ int main() {
   using Blk_SF = typename Sm1xxBlkScaledChunk::Blk_SF; 
   using SfAtom = typename Sm1xxBlkScaledChunk::SfAtom;
 
-  using LayoutSF = decltype(blocked_product(SfAtom{}, make_layout( make_shape(int32_t(0), int32_t(0), int32_t(0)),
-                                                                  make_stride(_1{}, int32_t(0), int32_t(0)))));
-
-
   print("SfAtom:  \t"); print(SfAtom {}); print("\n");
-  print("LayoutSF:\t"); print(LayoutSF {}); print("\n");
 
   auto problem_shape_MNKL = make_shape(256, 512, 1024, 1);
   using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVecSize>;
+  auto layout_sfa = Sm1xxBlkScaledConfig::deduce_layoutSFA();
   const auto layout_sfa_ref = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(problem_shape_MNKL);
   const auto layout_sfb_ref = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(problem_shape_MNKL);
+
+  print("\nLayoutSFA\t"); print(layout_sfa); print("\n");
+  print("size<0, 0>(LayoutSFA)\t"); print(size<0, 0>(layout_sfa)); print("\n");
+  print("size<1, 0>(LayoutSFA)\t"); print(size<1, 0>(layout_sfa)); print("\n");
 
   print("\nproblem_shape_MNKL:\t"); print(problem_shape_MNKL); print("\n");
   print("layout_sfa_ref:\t"); print(layout_sfa_ref); print("\n");

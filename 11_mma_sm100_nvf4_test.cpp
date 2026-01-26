@@ -76,19 +76,6 @@ sm1xx_kernel_input_element_to_mma_input_element() {
   }
 }
 
-template<int SFVecSize, UMMA::Major major = UMMA::Major::K>
-struct Sm1xxBlockScaledBasicChunk {
-
-  using Blk_MN    = _128;
-  using Blk_SF    =   _4; 
-
-  using SfKMajorAtom  = Layout< Shape< Shape<_32,_4>, Shape<Int<SFVecSize>, _4>>, 
-                               Stride<Stride<_16,_4>, Stride<           _0, _1>>>;
-  using SfMNMajorAtom = Layout< Shape< Shape<Int<SFVecSize>, _4>,  Shape<_32,_4>>, 
-                               Stride<Stride<            _0, _1>, Stride<_16,_4>>>;
-  using SfAtom    = cute::conditional_t<major == UMMA::Major::K, SfKMajorAtom, SfMNMajorAtom>;
-};
-
 //// Describe the Scalefactor Tensor without VectorSize
 struct Sm1xxBlockScaledTensorConfig {
   // k-major order
@@ -188,10 +175,14 @@ int main() {
 
   using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVecSize>;
 
+  auto layout_sfa = Sm1xxBlkScaledConfig::deduce_layoutSFA();
+  auto layout_sfb = Sm1xxBlkScaledConfig::deduce_layoutSFB();
+
   auto sfA_layout = Sm1xxBlkScaledConfig::deduce_smem_layoutSFA(tiled_mma, MmaTileShape{});
   auto sfB_layout = Sm1xxBlkScaledConfig::deduce_smem_layoutSFB(tiled_mma, MmaTileShape{});
 
   print("sfA_layout:\t"); print(sfA_layout); print("\n");
+  print("sfB_layout:\t"); print(sfB_layout); print("\n");
 
   auto smem_sfA_layout = make_layout(
     append(shape(sfA_layout), Int<4>{}),
@@ -318,17 +309,15 @@ int main() {
       tma_a, gA, sA_layout(_,_,_,Int<0>{}),
       MmaTileShape {}, tiled_mma, cluster_layout_vmnk);
 
-  auto tma_alter_atom = make_tma_atom_A_sm100<ElementA>(
-      tma_a, mA, sA_layout(_,_,_,Int<0>{}),
-      MmaTileShape {}, tiled_mma, cluster_layout_vmnk);
-
   // smem_sfA_laylout:	((((_32,_4),_1),(_16,_4)),_1,(_1,_4),_4):((((_16,_4),_512),(_0,_1)),_0,(_4,_512),_2048)
   // uint16_t <-- not fp8???
-  /*
   auto tma_sfa_atom = make_tma_atom_A_sm100<uint16_t>(
-      tma_sfa, gsfA, smem_sfA_layout(_,_,_,Int<0>{}),
-      MmaTileShape {}, tiled_mma, cluster_layout_vmnk);
-      */
+        tma_sfa,
+        make_tensor(static_cast<ElementSF const*>(nullptr), layout_sfa),
+        smem_sfA_layout(_,_,_,Int<0>{}),
+        MmaTileShape {},
+        tiled_mma,
+        cluster_layout_vmnk);
 
   print("\nStart mainloop: \n");
 
