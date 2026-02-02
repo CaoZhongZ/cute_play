@@ -156,9 +156,9 @@ int main() {
     return -1;
   }*/
   // Pre-partitioned Tile Shape (MmaTile_M, MmaTile_K) to post-partitioned (MmaA, NumMma_M, NumMma_K)
-  auto mma_shape_A = partition_shape_A(tiled_mma, make_shape(size<0>(mma_tiler), size<2>(mma_tiler), Int<4>{}));
+  auto mma_shape_A = partition_shape_A(tiled_mma, make_shape(size<0>(mma_tiler), size<2>(mma_tiler), _4{}));
   // Pre-partitioned Tile Shape (MmaTile_N, MmaTile_K) to post-partitioned (MmaB, NumMma_N, NumMma_K)
-  auto mma_shape_B = partition_shape_B(tiled_mma, make_shape(size<1>(mma_tiler), size<2>(mma_tiler), Int<4>{}));
+  auto mma_shape_B = partition_shape_B(tiled_mma, make_shape(size<1>(mma_tiler), size<2>(mma_tiler), _4{}));
 
   // Print and inspect mma_shape_A, and mma_shape_B for this example.
   print("mma_shape_A:\t"); print(mma_shape_A); print("\n");  // mma_shape_A:  ((_128,_16),_1,_4)
@@ -178,6 +178,10 @@ int main() {
   auto layout_sfa = Sm1xxBlkScaledConfig::deduce_layoutSFA();
   auto layout_sfb = Sm1xxBlkScaledConfig::deduce_layoutSFB();
 
+  print("layout_sfa and layout_sfb is used for global SF description\n");
+  print("layout_sfa:\t"); print(layout_sfa); print("\n");
+  print("layout_sfb:\t"); print(layout_sfb); print("\n");
+
   auto sfA_layout = Sm1xxBlkScaledConfig::deduce_smem_layoutSFA(tiled_mma, MmaTileShape{});
   auto sfB_layout = Sm1xxBlkScaledConfig::deduce_smem_layoutSFB(tiled_mma, MmaTileShape{});
 
@@ -190,6 +194,13 @@ int main() {
   );
 
   print("smem_sfA_laylout:\t"); print(smem_sfA_layout); print("\n");
+
+  auto smem_sfB_layout = make_layout(
+    append(shape(sfB_layout), Int<4>{}),
+    append(stride(sfB_layout), size(filter_zeros(sfA_layout)))
+  );
+
+  print("smem_sfB_laylout:\t"); print(smem_sfB_layout); print("\n");
 
   // The cluster shape and layout
   auto cluster_shape = make_shape(Int<1>{}, Int<1>{}, Int<1>{});
@@ -208,9 +219,6 @@ int main() {
   // A tensor MxK K-major (Layout T = Row-Major)
   Layout layout_A = make_layout(make_shape (Gemm_M,   Gemm_K),
                                 make_stride(Gemm_K, Int<1>{}));   // (Gemm_M,Gemm_K):(Gemm_K,_1)
-  // A tensor MxK K-major (Layout T = MN-Major)
-  Layout layout_sfA = make_layout(make_shape (Gemm_M,   Gemm_K/16));
-
   // B tensor NxK K-major (Layout N = Column-Major)
   Layout layout_B = make_layout(make_shape (Gemm_N,   Gemm_K),
                                 make_stride(Gemm_K, Int<1>{}));   // (Gemm_N,Gemm_K):(Gemm_K,_1)
@@ -220,10 +228,19 @@ int main() {
   // D tensor MxN N-major (Layout T = Row-Major)
   Layout layout_D = make_layout(make_shape (Gemm_M,   Gemm_N),
                                 make_stride(Gemm_N, Int<1>{}));   // (Gemm_M,Gemm_N):(Gemm_N,_1)
-  Tensor mA = make_tensor(make_gmem_ptr(static_cast<ElementA *>(nullptr)), layout_A);      // (Gemm_M, Gemm_K)
-  Tensor msfA = make_tensor(make_gmem_ptr(static_cast<ElementSFA *>(nullptr)), layout_sfA);
+                                                                  //
+  auto layout_SFA = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(cute::make_shape(Gemm_M, Gemm_N, Gemm_K, 1));
+  auto layout_SFB = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(cute::make_shape(Gemm_M, Gemm_N, Gemm_K, 1));
 
+  print("layout_SFA:\t"); print(layout_SFA); print("\n");
+  print("layout_SFB:\t"); print(layout_SFB); print("\n");
+
+  Tensor mA = make_tensor(make_gmem_ptr(static_cast<ElementA *>(nullptr)), layout_A);      // (Gemm_M, Gemm_K)
   Tensor mB = make_tensor(make_gmem_ptr(static_cast<ElementB *>(nullptr)), layout_B);      // (Gemm_N, Gemm_K)
+
+  Tensor msfA = make_tensor(make_gmem_ptr(static_cast<ElementSFA *>(nullptr)), layout_SFA);
+  Tensor msfB = make_tensor(make_gmem_ptr(static_cast<ElementSFA *>(nullptr)), layout_SFB);
+
   Tensor mC = make_tensor(make_gmem_ptr(static_cast<TypeC *>(nullptr)), layout_C);      // (Gemm_M, Gemm_N)
   Tensor mD = make_tensor(make_gmem_ptr(static_cast<TypeC *>(nullptr)), layout_D);      // (Gemm_M, Gemm_N)
 
@@ -305,19 +322,29 @@ int main() {
   auto tma_sfb = SM90_TMA_LOAD {};
 
   print("\ncluster_layout_vmnk"); print(cluster_layout_vmnk); print("\n");
+  print("\n-------------------------make_tma_atom_A_sm100----------------------------\n");
   auto tma_a_atom = make_tma_atom_A_sm100<ElementA>(
-      tma_a, gA, sA_layout(_,_,_,Int<0>{}),
-      MmaTileShape {}, tiled_mma, cluster_layout_vmnk);
+      tma_a,
+      gA,
+      sA_layout(_,_,_,Int<0>{}),
+      MmaTileShape {},
+      tiled_mma,
+      cluster_layout_vmnk
+    );
+  print("tma_a_atom\t"); print(tma_a_atom); print("\n");
 
   // smem_sfA_laylout:	((((_32,_4),_1),(_16,_4)),_1,(_1,_4),_4):((((_16,_4),_512),(_0,_1)),_0,(_4,_512),_2048)
   // uint16_t <-- not fp8???
+  print("\n-------------------------make_tma_atom_A_sm100----------------------------\n");
   auto tma_sfa_atom = make_tma_atom_A_sm100<uint16_t>(
-        tma_sfa,
-        make_tensor(static_cast<ElementSF const*>(nullptr), layout_sfa),
-        smem_sfA_layout(_,_,_,Int<0>{}),
-        MmaTileShape {},
-        tiled_mma,
-        cluster_layout_vmnk);
+      tma_sfa,
+      make_tensor(static_cast<ElementSF const*>(nullptr), layout_SFA),
+      smem_sfA_layout(_,_,_,Int<0>{}),
+      MmaTileShape {},
+      tiled_mma,
+      cluster_layout_vmnk
+    );
+  print("tma_sfa_atom\t"); print(tma_sfa_atom); print("\n");
 
   print("\nStart mainloop: \n");
 

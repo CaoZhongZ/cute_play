@@ -12,3 +12,4 @@ clean:
 			rm -f "$$f"; \
 		fi; \
 	done
+	rm -r *.dSYM
